@@ -1,5 +1,5 @@
-FROM mcr.microsoft.com/dotnet/aspnet:8.0 AS base
-WORKDIR /app
+FROM mcr.microsoft.com/azure-functions/dotnet-isolated:4-dotnet-isolated8.0 AS base
+WORKDIR /home/site/wwwroot
 EXPOSE 80
 
 FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
@@ -10,6 +10,5 @@ COPY . .
 RUN dotnet publish "NotificationsAPI.csproj" -c Release -o /app/publish
 
 FROM base AS final
-WORKDIR /app
 COPY --from=build /app/publish .
-ENTRYPOINT ["dotnet", "NotificationsAPI.dll"]
+ENV AzureWebJobsScriptRoot=/home/site/wwwroot

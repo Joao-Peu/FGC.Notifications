@@ -1,3 +1,3 @@
 namespace Shared.Events;
 
-public record PaymentProcessedEvent(Guid OrderId, Guid UserId, Guid GameId, decimal Price, string Status);
+public record PaymentProcessedEvent(string OrderId, string UserId, string GameId, decimal Price, string Status);

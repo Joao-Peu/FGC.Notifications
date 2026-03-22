@@ -1,65 +1,44 @@
-using MassTransit;
-using NotificationsAPI.Consumers;
-using NotificationsAPI.Infrastructure;
+using Microsoft.ApplicationInsights;
+using Microsoft.Azure.Functions.Worker;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Serilog;
+using Serilog.Events;
 
-var builder = WebApplication.CreateBuilder(args);
+Log.Logger = new LoggerConfiguration()
+    .MinimumLevel.Information()
+    .MinimumLevel.Override("Microsoft", LogEventLevel.Warning)
+    .WriteTo.Console()
+    .CreateBootstrapLogger();
 
-builder.Services.AddControllers();
-
-builder.Services.AddMassTransit(x =>
+try
 {
-    var rabbitMQSettings = builder.Configuration.GetSection("RabbitMQ").Get<RabbitMqSettings>()!;
-
-    x.AddConsumer<UserCreatedConsumer>();
-    x.AddConsumer<PaymentProcessedConsumer>();
-
-    x.UsingRabbitMq((context, cfg) =>
-    {
-        cfg.Host(rabbitMQSettings.HostName, "/", host =>
+    var host = new HostBuilder()
+        .ConfigureFunctionsWorkerDefaults()
+        .ConfigureServices(services =>
         {
-            host.Username(rabbitMQSettings.UserName);
-            host.Password(rabbitMQSettings.Password);
-        });
-
-        cfg.UseMessageRetry(r =>
+            services.AddApplicationInsightsTelemetryWorkerService();
+            services.ConfigureFunctionsApplicationInsights();
+        })
+        .UseSerilog((context, services, loggerConfiguration) =>
         {
-            r.Exponential(5, TimeSpan.FromSeconds(3), TimeSpan.FromMinutes(2), TimeSpan.FromSeconds(3));
-        });
+            loggerConfiguration
+                .MinimumLevel.Information()
+                .MinimumLevel.Override("Microsoft", LogEventLevel.Warning)
+                .WriteTo.Console()
+                .WriteTo.ApplicationInsights(
+                    services.GetRequiredService<TelemetryClient>(),
+                    TelemetryConverter.Traces);
+        })
+        .Build();
 
-        cfg.ReceiveEndpoint("notifications-payment-processed", e =>
-        {
-            e.ConfigureConsumer<PaymentProcessedConsumer>(context);
-        });
-
-        cfg.ReceiveEndpoint("notifications-user-created", e =>
-        {
-            e.ConfigureConsumer<UserCreatedConsumer>(context);
-        });
-
-        cfg.ConfigureEndpoints(context);
-    });
-
-});
-
-
-
-
-var app = builder.Build();
-
-app.MapHealthChecks("/health", new Microsoft.AspNetCore.Diagnostics.HealthChecks.HealthCheckOptions
+    host.Run();
+}
+catch (Exception ex)
 {
-    Predicate = _ => true
-});
-
-app.MapHealthChecks("/health/ready", new Microsoft.AspNetCore.Diagnostics.HealthChecks.HealthCheckOptions
+    Log.Fatal(ex, "Host terminated unexpectedly");
+}
+finally
 {
-    Predicate = check => check.Tags.Contains("ready")
-});
-
-app.MapHealthChecks("/health/live", new Microsoft.AspNetCore.Diagnostics.HealthChecks.HealthCheckOptions
-{
-    Predicate = _ => false
-});
-app.MapControllers();
-
-app.Run();
+    Log.CloseAndFlush();
+}
