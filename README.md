@@ -1,541 +1,128 @@
-﻿# NotificationsAPI - Microserviço de Notificações
+# FGC.Notifications
 
-## 🚀 Quick Start
+Microsserviço de notificações para a plataforma FCG (FIAP Cloud Games). Processa eventos de pagamento e envia notificações (simuladas via log) de forma assíncrona através de Azure Functions com trigger de Azure Service Bus. Projeto da **Fase 3 do Tech Challenge — PosTech FIAP**.
 
-### Deploy no Kubernetes (COMPLETO)
+## Fluxo de Comunicação entre Microsserviços
 
-```powershell
-# 1. Navegar para a pasta do projeto
-cd NotificationsAPI
+```mermaid
+graph LR
+    Client([Cliente]) -->|HTTP| APIM[API Gateway]
+    APIM -->|/api/users/**| Users[FGC.Users API]
+    APIM -->|/api/games/**| Games[FCG.Games API]
 
-# 2. Build da imagem Docker
-docker build -t notifications-api:latest .
+    Games -->|OrderPlacedEvent| Q1[/order-placed/]
+    Q1 -->|ServiceBusTrigger| Payments[FCG.Payments Function]
+    Payments -->|PaymentProcessedEvent| Q2[/payments-processed/]
+    Q2 -->|BackgroundService| Games
+    Payments -->|PaymentProcessedEvent| Q3[/notifications-payment-processed/]
+    Q3 -->|ServiceBusTrigger| Notifications[FGC.Notifications Function]
 
-# 3. Deploy no Kubernetes (ordem correta)
-cd ..
-cd k8s
+    Users --- DB1[(FGCUsersDb)]
+    Games --- DB2[(FCGGamesDb)]
+    Payments --- DB3[(FCGPaymentsDb)]
 
-# Namespace
-kubectl apply -f namespace.yaml
-
-# RabbitMQ (PVC, Deployment, Service, ConfigMap, Secret)
-kubectl apply -f services/configmap-rabbitmq.yaml -n microservices
-kubectl apply -f services/secrets-rabbitmq.yaml -n microservices
-kubectl apply -f services/deployment-rabbitmq.yaml -n microservices
-
-# NotificationsAPI (ConfigMap, Deployment, Service)
-kubectl apply -f notifications-api/notifications-configmap.yaml -n microservices
-kubectl apply -f notifications-api/notifications-deployment.yaml -n microservices
-kubectl apply -f notifications-api/notaifications-service.yaml -n microservices
-
-# 4. Verificar status
-kubectl get pods -n microservices
-kubectl logs -n microservices -f deployment/notifications-api
-
-# 5. Testar Health Check (port-forward)
-kubectl -n microservices port-forward service/notifications-api 8081:80
+    Games -.->|Logs & Traces| AI[Application Insights]
+    Users -.->|Logs & Traces| AI
+    Payments -.->|Logs & Traces| AI
+    Notifications -.->|Logs & Traces| AI
 ```
 
-### 📦 Deploy Automático
+## Fluxo de Notificações
 
-Use o script PowerShell para deploy completo:
+```mermaid
+sequenceDiagram
+    participant C as Cliente
+    participant G as FCG.Games API
+    participant SB as Azure Service Bus
+    participant P as FCG.Payments Function
+    participant N as FGC.Notifications Function
 
-```powershell
-# Deploy completo (inclui RabbitMQ)
-.\k8s\deploy-all.ps1
+    C->>G: POST /api/games/{id}/purchase (JWT)
+    G->>SB: OrderPlacedEvent → order-placed
 
-# Verificar logs
-kubectl logs -n microservices -f deployment/notifications-api
+    SB->>P: Trigger: order-placed
+    P->>SB: PaymentProcessedEvent → notifications-payment-processed
 
-# Acessar RabbitMQ Management UI
-kubectl -n microservices port-forward service/rabbitmq-service 15672:15672
-# Acesse: http://localhost:15672
-# Login: fiap / fiap123
+    SB->>N: Trigger: notifications-payment-processed
+    alt Status = Approved
+        N-->>N: Log: compra aprovada + email de confirmação (simulado)
+    else Status = Rejected
+        N-->>N: Log: compra rejeitada
+    end
 ```
 
----
+## Arquitetura
 
-## 🔌 Endpoints
-
-- **Health**: http://localhost:8081/health
-- **RabbitMQ Management**: http://localhost:15672 (user: `fiap`, pass: `fiap123`)
-
----
-
-## ⚙️ Configuração
-
-### Variáveis de Ambiente (via Kubernetes)
-A aplicação lê configurações de `ConfigMap` e `Secret`:
-
-- `rabbitmq-config` (`ConfigMap`):
-  - `hostname`: `rabbitmq-service`
-  - `port`: `5672`
-- `rabbitmq-credentials` (`Secret`):
-  - `username`: `fiap`
-  - `password`: `fiap123`
-
-No `Deployment` da `notifications-api`, os envs estão mapeados para a hierarquia de configuração do .NET:
-
-```yaml
-- name: RabbitMQ__HostName
-  valueFrom:
-    configMapKeyRef:
-      name: rabbitmq-config
-      key: hostname
-
-- name: RabbitMQ__UserName
-  valueFrom:
-    secretKeyRef:
-      name: rabbitmq-credentials
-      key: username
-
-- name: RabbitMQ__Password
-  valueFrom:
-    secretKeyRef:
-      name: rabbitmq-credentials
-      key: password
-```
-
-### Mapeamento no Código
-
-```csharp
-// Program.cs lê assim:
-builder.Configuration.GetSection("RabbitMQ").Get<RabbitMqSettings>();
-// → RabbitMQ__HostName (rabbitmq-service)
-// → RabbitMQ__Port (5672)
-// → RabbitMQ__UserName (fiap)
-// → RabbitMQ__Password (fiap123)
-```
-
----
-
-## ☸️ Kubernetes
-
-### Recursos Aplicados
-
-```
-# Namespace
-Namespace: microservices
-
-# RabbitMQ
-PVC:       rabbitmq-pvc
-Deployment: rabbitmq
-Service:    rabbitmq-service         (ClusterIP, portas 5672 + 15672)
-ConfigMap:  rabbitmq-config          (hostname/ports)
-Secret:     rabbitmq-credentials     (username/password)
-
-# NotificationsAPI
-ConfigMap:  notifications-api-config (ASP.NET Core env/urls)
-Deployment: notifications-api        (2 réplicas, initContainer aguardando RabbitMQ)
-Service:    notifications-api        (ClusterIP, porta 80)
-```
-
-### Portas Configuradas
-- **NotificationsAPI Container**: 80
-- **NotificationsAPI Service**: 80 (ClusterIP interno)
-- **RabbitMQ AMQP**: 5672 (protocolo de mensageria)
-- **RabbitMQ Management**: 15672 (UI web)
-- **Port-forward API**: `kubectl -n microservices port-forward service/notifications-api 8081:80`
-- **Port-forward RabbitMQ**: `kubectl -n microservices port-forward service/rabbitmq-service 15672:15672`
-
----
-
-## 📨 RabbitMQ Integration
-
-### Consumers Configurados
-
-#### 1. UserCreatedConsumer
-- **Queue**: `notifications-user-created`
-- **Event**: `UserCreatedEvent`
-- **Ação**: Envia email de boas-vindas (simulado via log)
-
-#### 2. PaymentProcessedConsumer
-- **Queue**: `notifications-payment-processed`
-- **Event**: `PaymentProcessedEvent`
-- **Ação**: 
-  - Se `Status == "Approved"` → Envia email de confirmação de compra
-  - Se `Status == "Rejected"` → Loga rejeição do pagamento
-
-### Configuração MassTransit
-
-```csharp
-// Retry Policy
-cfg.UseMessageRetry(r =>
-{
-    r.Exponential(5, TimeSpan.FromSeconds(3), TimeSpan.FromMinutes(2), TimeSpan.FromSeconds(3));
-});
-
-// Endpoints
-cfg.ReceiveEndpoint("notifications-payment-processed", e =>
-{
-    e.ConfigureConsumer<PaymentProcessedConsumer>(context);
-});
-
-cfg.ReceiveEndpoint("notifications-user-created", e =>
-{
-    e.ConfigureConsumer<UserCreatedConsumer>(context);
-});
-```
-
-### Testar Integração com RabbitMQ
-
-#### 1. Acessar RabbitMQ Management UI
-
-```sh
-kubectl -n microservices port-forward service/rabbitmq-service 15672:15672
-# Acesse: http://localhost:15672
-# Login: fiap / fiap123
-```
-
-#### 2. Publicar Mensagem de Teste - UserCreatedEvent
-Na UI do RabbitMQ:
-1. Vá em **Queues** → `notifications-user-created`
-2. Clique em **Publish message**
-3. Configure:
-   - **Content type**: `application/vnd.masstransit+json`
-   - **Delivery mode**: `2 (persistent)`
-4. Cole o payload:
-
-```json
-{
-  "messageId": "00000000-0000-0000-0000-000000000001",
-  "conversationId": "00000000-0000-0000-0000-000000000002",
-  "sourceAddress": "rabbitmq://rabbitmq-service/user_api",
-  "destinationAddress": "rabbitmq://rabbitmq-service/notifications-user-created",
-  "messageType": [
-    "urn:message:Shared.Events:UserCreatedEvent"
-  ],
-  "message": {
-    "userId": "550e8400-e29b-41d4-a716-446655440001",
-    "email": "user@example.com"
-  },
-  "sentTime": "2026-01-20T19:00:00Z"
-}
-```
-
-#### 3. Publicar Mensagem de Teste - PaymentProcessedEvent
-1. Vá em **Queues** → `notifications-payment-processed`
-2. Clique em **Publish message**
-3. Cole o payload:
-
-```json
-{
-  "messageId": "00000000-0000-0000-0000-000000000003",
-  "conversationId": "00000000-0000-0000-0000-000000000004",
-  "sourceAddress": "rabbitmq://rabbitmq-service/payment_api",
-  "destinationAddress": "rabbitmq://rabbitmq-service/notifications-payment-processed",
-  "messageType": [
-    "urn:message:Shared.Events:PaymentProcessedEvent"
-  ],
-  "message": {
-    "orderId": "550e8400-e29b-41d4-a716-446655440005",
-    "userId": "550e8400-e29b-41d4-a716-446655440006",
-    "gameId": "550e8400-e29b-41d4-a716-446655440007",
-    "price": 299.90,
-    "status": "Approved"
-  },
-  "sentTime": "2026-01-20T19:30:00Z"
-}
-```
-
-#### 4. Verificar Logs
-
-```sh
-kubectl logs -n microservices -f deployment/notifications-api
-```
-
-**Saída esperada:**
-```
-[NotificationsAPI] Welcome email sent to user@example.com (UserId=550e8400-e29b-41d4-a716-446655440001)
-[NotificationsAPI] Purchase approved for UserId=550e8400-e29b-41d4-a716-446655440006, GameId=550e8400-e29b-41d4-a716-446655440007, Price=299.90
-[NotificationsAPI] Purchase confirmation email sent to UserId=550e8400-e29b-41d4-a716-446655440006
-```
-
----
-
-## 🧪 Testes
-
-### Testar Health Check (Port-forward ativo)
-
-```sh
-# Health Check
-curl http://localhost:8081/health
-
-# Saída esperada:
-# {"status":"healthy"}
-```
-
-### Testar Consumers
-
-**Cenário 1: Usuário criado**
-```sh
-# Publicar UserCreatedEvent via RabbitMQ Management UI
-# Verificar logs: kubectl logs -n microservices -f deployment/notifications-api
-# Log esperado: "[NotificationsAPI] Welcome email sent to user@example.com"
-```
-
-**Cenário 2: Pagamento aprovado**
-```sh
-# Publicar PaymentProcessedEvent com Status="Approved"
-# Verificar logs
-# Log esperado: 
-# - "Purchase approved for UserId=..."
-# - (após 2 segundos) "Purchase confirmation email sent to UserId=..."
-```
-
-**Cenário 3: Pagamento rejeitado**
-```sh
-# Publicar PaymentProcessedEvent com Status="Rejected"
-# Log esperado: "Purchase rejected for UserId=..., GameId=..."
-```
-
----
-
-## 📁 Estrutura
+Azure Function Isolated Worker (.NET 8) com estrutura simples:
 
 ```
 NotificationsAPI/
-├── Consumers/              # Message consumers
-│   ├── UserCreatedConsumer.cs
-│   └── PaymentProcessedConsumer.cs
-├── Controllers/            # API endpoints
-│   └── HealthController.cs
-├── Infrastructure/         # Configuração
-│   └── RabbitMqSettings.cs
-├── Shared/                # Eventos compartilhados
+├── Functions/
+│   └── PaymentProcessedFunction.cs   # Azure Function (ServiceBusTrigger)
+├── Shared/
 │   └── Events/
-│       ├── UserCreatedEvent.cs
-│       └── PaymentProcessedEvent.cs
-├── k8s/                   # Kubernetes manifests
-│   ├── notifications-api/
-│   │   ├── notifications-configmap.yaml
-│   │   ├── notifications-deployment.yaml
-│   │   └── notaifications-service.yaml
-│   └── services/
-│       ├── configmap-rabbitmq.yaml
-│       ├── deployment-rabbitmq.yaml
-│       ├── secrets-rabbitmq.yaml
-│       └── sqlserver-secret.yaml
-├── Dockerfile             # Multi-stage build
-├── Program.cs             # Configuração da aplicação
-├── appsettings.json       # Configurações locais
-└── README.md
+│       └── PaymentProcessedEvent.cs  # Evento de domínio
+├── Program.cs                        # Startup (Serilog + Application Insights)
+├── host.json                         # Configuração do Azure Functions
+├── appsettings.json                  # Configuração do Serilog
+├── Dockerfile                        # Multi-stage build
+└── NotificationsAPI.csproj
 ```
 
----
+## Function
 
-## 🐛 Troubleshooting
+### PaymentProcessedFunction
 
-### Pod não inicia (CrashLoopBackOff)
+- **Trigger**: Azure Service Bus — queue `notifications-payment-processed`
+- **Input**: `ServiceBusReceivedMessage` com `PaymentProcessedEvent` no body
+- **Comportamento**:
+  - `Status == "Approved"` → Loga confirmação de compra + simula envio de email
+  - `Status != "Approved"` → Loga rejeição do pagamento
+  - Evento nulo/inválido → Log de warning
 
-```sh
-# Ver logs detalhados
-kubectl logs -n microservices -f deployment/notifications-api
+## Configuração
 
-# Verificar eventos
-kubectl describe pod -n microservices -l app=notifications-api
+| Variável | Descrição | Padrão |
+|----------|-----------|--------|
+| `SERVICEBUS_CONNECTION` | Connection string do Azure Service Bus | (obrigatório) |
+| `APPLICATIONINSIGHTS_CONNECTION_STRING` | Application Insights | (desabilitado se vazio) |
 
-# Problemas comuns:
-# 1. RabbitMQ não conecta → Verifique: kubectl get pods -n microservices | findstr rabbitmq
-# 2. Filas não criadas → As filas são criadas automaticamente pelo MassTransit
-# 3. Imagem não encontrada → Verifique: docker images | findstr notifications-api
+## CI/CD
+
+Pipeline GitHub Actions (`.github/workflows/ci-cd.yml`):
+
+- **CI** (push + PR na master): restore → build
+- **CD** (apenas push na master): build Docker → push ACR → deploy Azure Container App
+
+## Build & Run
+
+```bash
+# Build
+dotnet build
+
+# Rodar Functions localmente (requer Azure Functions Core Tools)
+cd NotificationsAPI
+func start
 ```
 
-### RabbitMQ não está rodando
+## Docker
 
-```sh
-# Verificar status
-kubectl get pods -n microservices -l app=rabbitmq
-
-# Logs do RabbitMQ
-kubectl logs -n microservices -f deployment/rabbitmq
-
-# Redeploy
-kubectl delete -n microservices -f k8s/services/deployment-rabbitmq.yaml
-kubectl apply -n microservices -f k8s/services/deployment-rabbitmq.yaml
+```bash
+docker build -f NotificationsAPI/Dockerfile -t fgc-notifications .
+docker run -p 5099:80 \
+  -e SERVICEBUS_CONNECTION="Endpoint=sb://..." \
+  fgc-notifications
 ```
 
-### Mensagens não são consumidas
+## Observabilidade
 
-**Sintoma**: Mensagens publicadas no RabbitMQ não aparecem nos logs
+- **Serilog** com sinks para Console e Application Insights
+- **Application Insights** para logs, traces e métricas centralizados
+- Logs estruturados com `ServiceName: FGC.Notifications`
 
-**Diagnóstico:**
-```sh
-# 1. Verificar se as filas existem
-# Acesse: http://localhost:15672 (após port-forward)
-# Vá em "Queues" e procure por:
-# - notifications-user-created
-# - notifications-payment-processed
+## Tecnologias
 
-# 2. Verificar logs do NotificationsAPI
-kubectl logs -n microservices -f deployment/notifications-api
-
-# 3. Verificar se o consumer está conectado
-# No RabbitMQ Management UI: Queues → [nome da fila] → Consumers
-```
-
-**Solução:**
-```sh
-# Reiniciar o pod
-kubectl delete -n microservices pod -l app=notifications-api
-
-# Verificar reconexão
-kubectl logs -n microservices -f deployment/notifications-api
-```
-
-### Erro: Cannot connect to RabbitMQ
-
-**Causa**: NotificationsAPI inicia antes do RabbitMQ estar pronto
-
-**Solução:**
-```sh
-# 1. Verificar se RabbitMQ está running
-kubectl get pods -n microservices -l app=rabbitmq
-
-# 2. Aguardar RabbitMQ ficar pronto
-kubectl wait -n microservices --for=condition=ready pod -l app=rabbitmq --timeout=60s
-
-# 3. Reiniciar NotificationsAPI
-kubectl delete -n microservices pod -l app=notifications-api
-```
-
-### Verificar Status Geral
-
-```sh
-# Status de todos os pods
-kubectl get pods -n microservices
-
-# Logs NotificationsAPI
-kubectl logs -n microservices -f deployment/notifications-api
-
-# Logs RabbitMQ
-kubectl logs -n microservices -f deployment/rabbitmq
-
-# Remover tudo e redeployar
-kubectl delete -n microservices -f k8s/
-kubectl apply -n microservices -f k8s/services/deployment-rabbitmq.yaml
-# Aguardar RabbitMQ ficar pronto
-sleep 30
-kubectl apply -n microservices -f k8s/notifications-api/notifications-deployment.yaml
-kubectl apply -n microservices -f k8s/notifications-api/notaifications-service.yaml
-```
-
----
-
-## 🔒 Segurança
-
-- ✅ Container roda com configuração padrão do ASP.NET Core
-- ✅ Configurações separadas do código
-- ⚠️ Credenciais RabbitMQ são demo - **MUDE EM PRODUÇÃO**
-- ⚠️ Usuário/senha padrão do RabbitMQ (fiap/fiap123 neste ambiente) - **Configure usuários dedicados em produção**
-- ⚠️ RabbitMQ Management UI exposta - **Restrinja acesso em produção**
-
----
-
-## 📝 Notas Técnicas
-
-### MassTransit + RabbitMQ
-- ✅ Usa MassTransit 8.0 para abstração do RabbitMQ
-- ✅ Consumers: `UserCreatedConsumer`, `PaymentProcessedConsumer`
-- ✅ Queues: `notifications-user-created`, `notifications-payment-processed`
-- ✅ Retry Policy: Exponential backoff (5 tentativas, 3s → 2min)
-- ✅ Filas criadas automaticamente pelo MassTransit
-
-### Notificações Simuladas
-- 📧 **Email de Boas-vindas**: Loga no console quando usuário é criado
-- 📧 **Email de Confirmação**: Loga no console quando pagamento é aprovado (com delay de 2s)
-- 📧 **Pagamento Rejeitado**: Loga no console quando pagamento é rejeitado
-
-### Health Checks
-- ✅ Endpoint básico: `/health`
-- ⚠️ Não valida conectividade com RabbitMQ (use readiness probe para produção)
-
----
-
-## 🚀 Melhorias para Produção
-
-### Health Checks Avançados
-Adicione health checks para RabbitMQ:
-
-```csharp
-// Program.cs
-builder.Services.AddHealthChecks()
-    .AddRabbitMQ(rabbitConnectionString: $"amqp://{rabbitMQSettings.UserName}:{rabbitMQSettings.Password}@{rabbitMQSettings.HostName}:{rabbitMQSettings.Port}");
-
-app.MapHealthChecks("/health/live");
-app.MapHealthChecks("/health/ready");
-```
-
-Habilite health checks no `notifications-deployment.yaml`:
-
-```yaml
-livenessProbe:
-  httpGet:
-    path: /health/live
-    port: 80
-  initialDelaySeconds: 30
-  periodSeconds: 10
-
-readinessProbe:
-  httpGet:
-    path: /health/ready
-    port: 80
-  initialDelaySeconds: 10
-  periodSeconds: 5
-```
-
-### Secrets Management
-- Use Azure Key Vault ou HashiCorp Vault
-- Credenciais RabbitMQ em Kubernetes Secrets
-- Rotação automática de senhas
-
-### Observabilidade
-- Adicione Application Insights ou Prometheus
-- Configure logs estruturados (Serilog)
-- Implemente tracing distribuído (OpenTelemetry)
-- Monitore métricas de consumo de mensagens
-
-### Persistência de Mensagens
-RabbitMQ já está configurado com `PersistentVolumeClaim`:
-
-```yaml
-# deployment-rabbitmq.yaml
-volumes:
-  - name: rabbitmq-data
-    persistentVolumeClaim:
-      claimName: rabbitmq-pvc
-containers:
-  - name: rabbitmq
-    volumeMounts:
-      - name: rabbitmq-data
-        mountPath: /var/lib/rabbitmq
-```
-
-### Dead Letter Queue (DLQ)
-Configure DLQ para mensagens que falharam após todas as tentativas:
-
-```csharp
-cfg.ReceiveEndpoint("notifications-payment-processed", e =>
-{
-    e.ConfigureConsumer<PaymentProcessedConsumer>(context);
-    
-    // Configurar Dead Letter Exchange
-    e.ConfigureDeadLetterQueueDeadLetterExchange();
-    e.ConfigureDeadLetterQueueMessageTtl(TimeSpan.FromMinutes(10));
-});
-```
-
----
-
-## 📚 Referências
-
-- [MassTransit Documentation](https://masstransit.io/)
-- [RabbitMQ Tutorials](https://www.rabbitmq.com/tutorials)
-- [ASP.NET Core Health Checks](https://learn.microsoft.com/aspnet/core/host-and-deploy/health-checks)
-- [Kubernetes Best Practices](https://kubernetes.io/docs/concepts/configuration/overview/)
-
----
-
-## 📄 Licença
-
-Este projeto é parte da Pós-Graduação FIAP e é fornecido como material educacional.
+- .NET 8.0
+- Azure Functions (Isolated Worker)
+- Azure Service Bus (Queues)
+- Serilog + Application Insights
