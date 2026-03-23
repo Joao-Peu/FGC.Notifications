@@ -1,4 +1,3 @@
-using Azure.Messaging.ServiceBus;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Extensions.Logging;
 using Shared.Events;
@@ -11,10 +10,18 @@ public class PaymentProcessedFunction(ILogger<PaymentProcessedFunction> logger)
     [Function(nameof(PaymentProcessedFunction))]
     public Task Run(
         [ServiceBusTrigger("notifications-payment-processed", Connection = "SERVICEBUS_CONNECTION")]
-        ServiceBusReceivedMessage message)
+        string message,
+        FunctionContext context)
     {
+        var bindingData = context.BindingContext.BindingData;
+        var correlationId = bindingData.TryGetValue("CorrelationId", out var cid) && !string.IsNullOrEmpty(cid?.ToString())
+            ? cid.ToString()!
+            : Guid.NewGuid().ToString();
+
+        using var logScope = logger.BeginScope(new Dictionary<string, object> { ["CorrelationId"] = correlationId });
+
         var paymentEvent = JsonSerializer.Deserialize<PaymentProcessedEvent>(
-            message.Body.ToString(),
+            message,
             new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
 
         if (paymentEvent is null)
@@ -26,8 +33,8 @@ public class PaymentProcessedFunction(ILogger<PaymentProcessedFunction> logger)
         if (paymentEvent.Status == "Approved")
         {
             logger.LogInformation(
-                "[NotificationsAPI] Purchase approved for UserId={UserId}, GameId={GameId}, Price={Price}",
-                paymentEvent.UserId, paymentEvent.GameId, paymentEvent.Price);
+                "[NotificationsAPI] Purchase approved for UserId={UserId}, GameId={GameId}, Price={Price}, CorrelationId={CorrelationId}",
+                paymentEvent.UserId, paymentEvent.GameId, paymentEvent.Price, correlationId);
 
             logger.LogInformation(
                 "[NotificationsAPI] Purchase confirmation email sent to UserId={UserId}",
@@ -36,8 +43,8 @@ public class PaymentProcessedFunction(ILogger<PaymentProcessedFunction> logger)
         else
         {
             logger.LogInformation(
-                "[NotificationsAPI] Purchase rejected for UserId={UserId}, GameId={GameId}",
-                paymentEvent.UserId, paymentEvent.GameId);
+                "[NotificationsAPI] Purchase rejected for UserId={UserId}, GameId={GameId}, CorrelationId={CorrelationId}",
+                paymentEvent.UserId, paymentEvent.GameId, correlationId);
         }
 
         return Task.CompletedTask;

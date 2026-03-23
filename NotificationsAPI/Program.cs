@@ -25,7 +25,10 @@ try
             loggerConfiguration
                 .MinimumLevel.Information()
                 .MinimumLevel.Override("Microsoft", LogEventLevel.Warning)
-                .WriteTo.Console()
+                .Enrich.FromLogContext()
+                .Enrich.WithProperty("ServiceName", "FGC.Notifications")
+                .WriteTo.Console(outputTemplate:
+                    "[{Timestamp:HH:mm:ss} {Level:u3}] {Message:lj} {Properties:j}{NewLine}{Exception}")
                 .WriteTo.ApplicationInsights(
                     services.GetRequiredService<TelemetryClient>(),
                     TelemetryConverter.Traces);
