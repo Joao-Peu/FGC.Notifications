@@ -4,10 +4,10 @@ EXPOSE 80
 
 FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
 WORKDIR /src
-COPY ["NotificationsAPI.csproj", "./"]
-RUN dotnet restore "NotificationsAPI.csproj"
-COPY . .
-RUN dotnet publish "NotificationsAPI.csproj" -c Release -o /app/publish
+COPY ["NotificationsAPI/NotificationsAPI.csproj", "NotificationsAPI/"]
+RUN dotnet restore "NotificationsAPI/NotificationsAPI.csproj"
+COPY NotificationsAPI/ NotificationsAPI/
+RUN dotnet publish "NotificationsAPI/NotificationsAPI.csproj" -c Release -o /app/publish
 
 FROM base AS final
 COPY --from=build /app/publish .
